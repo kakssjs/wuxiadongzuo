@@ -1,0 +1,1161 @@
+extends CharacterBody2D
+
+signal stamina_changed(current_stamina: float, max_stamina: float)
+signal exhaustion_changed(is_exhausted: bool)
+signal blocked
+signal combat_message_requested(message: String)
+signal skill_slots_changed(slot_names: Array[String])
+signal active_skill_slots_changed(active_states: Array)
+
+@export var move_speed: float = 180.0
+@export var acceleration: float = 1200.0
+@export var deceleration: float = 1400.0
+@export var melee_damage: int = 1
+@export var melee_range: float = 26.0
+@export var melee_size: Vector2 = Vector2(44.0, 34.0)
+@export var melee_cooldown: float = 0.35
+@export var melee_lunge_force: float = 90.0
+@export var melee_knockback_force: float = 420.0
+@export var hit_pause_duration: float = 0.055
+@export var max_stamina: float = 10.0
+@export var attack_stamina_cost: float = 2.0
+@export var stamina_regen_per_second: float = 2.5
+@export var defend_stamina_per_second: float = 4.0
+@export var defend_block_amount: int = 1
+@export var defend_move_speed_multiplier: float = 0.55
+@export var dash_stamina_cost: float = 3.0
+@export var dash_speed: float = 520.0
+@export var dash_duration: float = 0.14
+@export var dash_cooldown: float = 0.35
+@export var perfect_guard_window: float = 0.25
+@export var perfect_guard_stamina_restore: float = 4.0
+@export var counter_window: float = 1.5
+@export var counter_damage_bonus: int = 2
+@export var counter_knockback_bonus: float = 180.0
+@export var normal_stagger_amount: float = 1.0
+@export var counter_stagger_amount: float = 2.5
+@export var momentum_stagger_bonus: float = 0.75
+@export var back_attack_damage_bonus: int = 1
+@export var hurt_flash_duration: float = 0.18
+@export var hurt_pulse_scale: float = 1.28
+@export var attack_hitback_decay: float = 360.0
+@export var sword_rest_offset: float = -0.35
+@export var sword_swing_arc: float = 1.35
+@export var sword_swing_duration: float = 0.16
+
+@onready var facing_marker: Polygon2D = $FacingMarker
+@onready var body: Sprite2D = $Body
+@onready var selection_ring: Polygon2D = $SelectionRing
+@onready var health_component: HealthComponent = $HealthComponent
+@onready var guard_ring: Polygon2D = $GuardRing
+@onready var damage_ring: Polygon2D = $DamageRing
+@onready var attack_preview: Node2D = $AttackPreview
+@onready var attack_preview_visual: Polygon2D = $AttackPreview/Visual
+@onready var skill_caster: SkillCaster = $SkillCaster
+@onready var sword: Node2D = get_node_or_null("Sword") as Node2D
+
+const HIT_SPARK_SCENE := preload("res://scenes/effects/HitSpark.tscn")
+const SLASH_TRAIL_SCENE := preload("res://scenes/effects/SlashTrail.tscn")
+const TRANSFORM_SKILL := preload("res://resources/skills/Transform.tres")
+const DIVINE_LIGHT_SKILL := preload("res://resources/skills/ProtectiveDivineLight.tres")
+const PLAYER_DOWN_IDLE_TEXTURE_PATH := "res://assets/xianxia/players_gemini_idle_down.png"
+const PLAYER_DOWN_RUN_TEXTURE := preload("res://assets/xianxia/players/transparent_cropped_original_size/down_run.png")
+const PLAYER_UP_IDLE_TEXTURE_PATH := "res://assets/xianxia/players_gemini_idle_up.png"
+const PLAYER_UP_RUN_TEXTURE := preload("res://assets/xianxia/players/transparent_cropped_original_size/up_run.png")
+const PLAYER_LEFT_IDLE_TEXTURE_PATH := "res://assets/xianxia/players_gemini_idle_left.png"
+const PLAYER_LEFT_RUN_TEXTURE := preload("res://assets/xianxia/players/transparent_cropped_original_size/left_run.png")
+const PLAYER_RIGHT_RUN_TEXTURE := preload("res://assets/xianxia/players/transparent_cropped_original_size/right_run.png")
+const PLAYER_FIVE_DIR_RUN_SHEET_PATH := "res://assets/xianxia/players_gemini_aligned_5dir_run.png"
+const RUN_ANIM_FPS: float = 10.0
+const PLAYER_IDLE_SHEET_PATH := "res://assets/xianxia/players_gemini_aligned_idle.png"
+const IDLE_ANIM_FPS: float = 1.0
+const PLAYER_IDLE_SHEET_COLUMNS := 6
+const PLAYER_IDLE_SHEET_ROWS := 3
+const PLAYER_IDLE_ROW_DOWN := 0
+const PLAYER_IDLE_ROW_UP := 1
+const PLAYER_IDLE_ROW_LEFT := 2
+const PLAYER_SWORD_TEXTURE := preload("res://assets/xianxia/sword.png")
+const PLAYER_DISPLAY_SIZE := Vector2(32.0, 36.0)
+const PLAYER_RUN_SHEET_COLUMNS := 6
+const PLAYER_RUN_SHEET_ROWS := 5
+const PLAYER_RUN_ROW_DOWN_LEFT := 0
+const PLAYER_RUN_ROW_LEFT := 1
+const PLAYER_RUN_ROW_UP_LEFT := 2
+const PLAYER_RUN_ROW_UP := 3
+const PLAYER_RUN_ROW_DOWN := 4
+const ATTACK_VARIANT_NORMAL := "normal"
+const ATTACK_VARIANT_COUNTER := "counter"
+const ATTACK_VARIANT_BACK_HIT := "back_hit"
+const ATTACK_VARIANT_MOMENTUM := "momentum"
+const ATTACK_VARIANT_IMPACT := "impact"
+const ATTACK_VISUAL_DURATION: float = 0.18
+const PLAYER_ATTACK_SHEET_PATH := "res://assets/xianxia/players_attack.png"
+const PLAYER_ATTACK_SHEET_COLUMNS := 6
+const PLAYER_ATTACK_SHEET_ROWS := 5
+const PLAYER_ATTACK_ROW_DOWN := 0
+const PLAYER_ATTACK_ROW_LEFT := 1
+const PLAYER_ATTACK_ROW_UP := 2
+const PLAYER_ATTACK_ROW_DEATH := 3
+const DEATH_ANIM_FPS: float = 8.0
+
+var attack_buffer: float = 0.0
+var attack_pending_timer: float = 0.0
+var attack_animation_duration: float = 0.30
+var weapon_rig: Node2D
+var attack_direction := Vector2.DOWN
+var attack_had_momentum := false
+var weapon_bonus_damage: int = 0
+var invulnerability_timer: float = 0.0
+var combo_step: int = 0
+var combo_timer: float = 0.0
+
+var sword_visual: Sprite2D
+var sword_mount: Node2D
+var robe_sash_visual: Polygon2D
+var last_facing_direction: Vector2 = Vector2.DOWN
+var current_stamina: float
+var melee_timer: float = 0.0
+var attack_preview_timer: float = 0.0
+var attack_visual_timer: float = 0.0
+var sword_swing_timer: float = 0.0
+var sword_swing_strength: float = 1.0
+var hurt_flash_timer: float = 0.0
+var hurt_pulse_timer: float = 0.0
+var damage_ring_timer: float = 0.0
+var block_ring_timer: float = 0.0
+var perfect_guard_timer: float = 0.0
+var counter_ready_timer: float = 0.0
+var dash_timer: float = 0.0
+var dash_cooldown_timer: float = 0.0
+var dash_direction: Vector2 = Vector2.ZERO
+var attack_hitback_velocity: Vector2 = Vector2.ZERO
+var current_input_direction: Vector2 = Vector2.ZERO
+var selected_skill_slot: int = 0
+var active_skill_slots: Array[bool] = [false, false, false, false, false]
+var is_defending: bool = false
+var is_exhausted: bool = false
+var is_defeated: bool = false
+var normal_body_scale: Vector2 = Vector2.ONE
+var visual_time: float = 0.0
+var _run_anim_timer: float = 0.0
+var _run_anim_frame: int = 0
+var _afterimage_timer: float = 0.0
+var _afterimage_interval_move: float = 0.07
+var _afterimage_interval_dash: float = 0.035
+var equipped_weapon_id: String = "iron_sword"
+var _body_base_scale: Vector2 = Vector2.ONE
+var _five_dir_run_frames: Dictionary = {}
+var _five_dir_run_sheet: Texture2D
+var _player_down_idle_texture: Texture2D
+var _player_up_idle_texture: Texture2D
+var _player_left_idle_texture: Texture2D
+var _idle_frames: Dictionary = {}
+var _idle_sheet: Texture2D
+var _idle_anim_timer: float = 0.0
+var _idle_anim_frame: int = 0
+var _attack_sheet: Texture2D
+var _attack_frames: Dictionary = {}
+var _weapon_attack_frames: Dictionary = {}
+var _death_anim_timer: float = 0.0
+var _death_anim_frame: int = 0
+
+func _ready() -> void:
+	_idle_sheet = _load_png_texture(PLAYER_IDLE_SHEET_PATH)
+	_player_down_idle_texture = _load_png_texture(PLAYER_DOWN_IDLE_TEXTURE_PATH)
+	_player_up_idle_texture = _load_png_texture(PLAYER_UP_IDLE_TEXTURE_PATH)
+	_player_left_idle_texture = _load_png_texture(PLAYER_LEFT_IDLE_TEXTURE_PATH)
+	_five_dir_run_sheet = load(PLAYER_FIVE_DIR_RUN_SHEET_PATH) as Texture2D
+	_attack_sheet = load(PLAYER_ATTACK_SHEET_PATH) as Texture2D
+	_setup_xianxia_visuals()
+	_sync_body_scale()
+	current_stamina = max_stamina
+	health_component.damaged.connect(_on_damaged)
+	health_component.died.connect(_on_died)
+	if skill_caster != null:
+		_ensure_default_transform_skill()
+		skill_caster.skill_slots_changed.connect(_on_skill_slots_changed)
+		skill_caster.skill_cast_failed.connect(_on_skill_cast_failed)
+		skill_caster.skill_cast_started.connect(_on_skill_cast_started)
+		skill_caster.active_slots_changed.connect(_on_active_slots_changed)
+		active_skill_slots = skill_caster.get_active_slots()
+	stamina_changed.emit(current_stamina, max_stamina)
+	skill_slots_changed.emit(get_skill_slot_names())
+	active_skill_slots_changed.emit(active_skill_slots)
+
+func _physics_process(delta: float) -> void:
+	attack_buffer = maxf(0.0, attack_buffer - delta)
+	invulnerability_timer = maxf(0.0, invulnerability_timer - delta)
+	combo_timer = maxf(0.0, combo_timer - delta)
+	if Input.is_action_just_pressed("attack"):
+		attack_buffer = 0.18
+	z_index = int(position.y) + 500
+	visual_time += delta
+	if attack_pending_timer > 0.0 and not is_defeated:
+		attack_pending_timer -= delta
+		if attack_pending_timer <= 0.0:
+			_resolve_melee_attack()
+	if hurt_flash_timer > 0.0:
+		hurt_flash_timer -= delta
+		if hurt_flash_timer <= 0.0:
+			_refresh_body_feedback()
+	if hurt_pulse_timer > 0.0:
+		hurt_pulse_timer -= delta
+		var pulse_duration := maxf(hurt_flash_duration, 0.001)
+		var pulse_t := clampf(hurt_pulse_timer / pulse_duration, 0.0, 1.0)
+		body.scale = normal_body_scale.lerp(normal_body_scale * hurt_pulse_scale, pulse_t)
+		if hurt_pulse_timer <= 0.0:
+			body.scale = normal_body_scale
+	if damage_ring_timer > 0.0:
+		damage_ring_timer -= delta
+		var damage_t := clampf(damage_ring_timer / 0.2, 0.0, 1.0)
+		damage_ring.scale = Vector2.ONE.lerp(Vector2(1.45, 1.45), 1.0 - damage_t)
+		damage_ring.modulate.a = damage_t
+		if damage_ring_timer <= 0.0:
+			damage_ring.visible = false
+	if block_ring_timer > 0.0:
+		block_ring_timer -= delta
+		if block_ring_timer <= 0.0:
+			_refresh_body_feedback()
+	if perfect_guard_timer > 0.0:
+		perfect_guard_timer -= delta
+	if counter_ready_timer > 0.0:
+		counter_ready_timer -= delta
+		if counter_ready_timer <= 0.0:
+			counter_ready_timer = 0.0
+			_refresh_body_feedback()
+	if dash_cooldown_timer > 0.0:
+		dash_cooldown_timer -= delta
+	attack_hitback_velocity = attack_hitback_velocity.move_toward(Vector2.ZERO, attack_hitback_decay * delta)
+
+	if is_defeated:
+		velocity = attack_hitback_velocity
+		move_and_slide()
+		_update_death_animation(delta)
+		return
+
+	_update_defense(delta)
+
+	if melee_timer > 0.0:
+		melee_timer -= delta
+	if attack_preview_timer > 0.0:
+		attack_preview_timer -= delta
+		if attack_preview_timer <= 0.0:
+			attack_preview.visible = false
+	if attack_visual_timer > 0.0:
+		attack_visual_timer -= delta
+
+	var input_direction := Input.get_vector(
+		"move_left",
+		"move_right",
+		"move_up",
+		"move_down"
+	)
+	current_input_direction = input_direction
+
+	if input_direction != Vector2.ZERO and attack_visual_timer <= 0.0:
+		last_facing_direction = input_direction
+		facing_marker.rotation = last_facing_direction.angle() - PI * 0.5
+
+	if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and attack_visual_timer <= 0.0:
+		var aim := get_global_mouse_position() - global_position
+		if aim.length() > 8.0:
+			last_facing_direction = aim.normalized()
+	_update_sword_feedback(delta)
+
+	if Input.is_action_just_pressed("dash"):
+		_try_dash(input_direction)
+
+	_handle_skill_input()
+
+	if dash_timer > 0.0:
+		dash_timer -= delta
+		velocity = dash_direction * dash_speed + attack_hitback_velocity
+		move_and_slide()
+		_update_xianxia_animation(delta)
+		_afterimage_timer -= delta
+		if _afterimage_timer <= 0.0:
+			_afterimage_timer = _afterimage_interval_dash
+			_spawn_afterimage(0.3)
+		return
+
+	var effective_move_speed := move_speed
+	if is_defending:
+		effective_move_speed *= defend_move_speed_multiplier
+
+	var target_velocity := input_direction * effective_move_speed
+	var rate := acceleration
+	if input_direction == Vector2.ZERO:
+		rate = deceleration
+
+	velocity = velocity.move_toward(target_velocity, rate * delta) + attack_hitback_velocity
+	move_and_slide()
+
+	if attack_buffer > 0.0 or Input.is_action_pressed("attack"):
+		_try_melee_attack()
+
+	_update_xianxia_animation(delta)
+
+func _try_melee_attack() -> void:
+	if melee_timer > 0.0 or is_defending or is_exhausted or current_stamina < attack_stamina_cost or dash_timer > 0.0:
+		return
+
+	attack_buffer = 0.0
+	combo_step = (combo_step % 3) + 1 if combo_timer > 0.0 else 1
+	combo_timer = 0.85
+	melee_timer = melee_cooldown * (1.25 if combo_step == 3 else 0.85)
+	attack_animation_duration = melee_cooldown * 0.85
+	attack_visual_timer = attack_animation_duration
+	attack_pending_timer = attack_animation_duration * 0.48
+	attack_direction = last_facing_direction
+	attack_had_momentum = current_input_direction != Vector2.ZERO and current_input_direction.dot(last_facing_direction) > 0.75
+	_set_stamina(current_stamina - attack_stamina_cost)
+
+func _resolve_melee_attack() -> void:
+	last_facing_direction = attack_direction
+	_spawn_slash_trail(ATTACK_VARIANT_IMPACT if combo_step == 3 else ATTACK_VARIANT_NORMAL)
+	var world := get_tree().get_first_node_in_group("world")
+	var _is_slam: bool = world != null and world.has_method("has_slam_charge") and world.has_slam_charge()
+	var _is_counter: bool = counter_ready_timer > 0.0
+	var _has_momentum: bool = current_input_direction != Vector2.ZERO and current_input_direction.dot(last_facing_direction) > 0.75
+	_start_sword_swing(1.0)
+	velocity += last_facing_direction * melee_lunge_force
+
+	var is_counter_attack := counter_ready_timer > 0.0
+	var has_momentum := attack_had_momentum
+	var attack_damage := melee_damage + weapon_bonus_damage + (1 if combo_step == 3 else 0)
+	var attack_knockback := melee_knockback_force
+	var stagger_amount := normal_stagger_amount
+	var is_impact_attack: bool = world != null and world.has_method("has_slam_charge") and world.has_slam_charge()
+	if is_impact_attack:
+		attack_knockback += 260.0
+		stagger_amount += 2.0
+	if is_counter_attack:
+		attack_damage += counter_damage_bonus
+		attack_knockback += counter_knockback_bonus
+		stagger_amount = counter_stagger_amount
+		counter_ready_timer = 0.0
+		_refresh_body_feedback()
+	if has_momentum:
+		attack_knockback += 110.0
+		stagger_amount += momentum_stagger_bonus
+
+	var shape := RectangleShape2D.new()
+	shape.size = melee_size
+
+	var query := PhysicsShapeQueryParameters2D.new()
+	query.shape = shape
+	query.transform = Transform2D(
+		last_facing_direction.angle(),
+		global_position + last_facing_direction * melee_range
+	)
+	query.exclude = [get_rid()]
+	query.collide_with_bodies = true
+	query.collide_with_areas = false
+
+	var hits := get_world_2d().direct_space_state.intersect_shape(query, 16)
+	var damaged_enemies := {}
+	var landed_hit := false
+	var landed_back_hit := false
+	for hit in hits:
+		var collider := hit.get("collider") as Node
+		if collider == null or not collider.is_in_group("enemies"):
+			continue
+		if collider.is_in_group("zombies"):
+			continue
+		if damaged_enemies.has(collider):
+			continue
+		var ray := PhysicsRayQueryParameters2D.create(global_position, collider.global_position)
+		ray.exclude = [get_rid()]
+		var obstruction := get_world_2d().direct_space_state.intersect_ray(ray)
+		if not obstruction.is_empty() and obstruction.collider != collider and not obstruction.collider.is_in_group("enemies"):
+			continue
+
+		var health := collider.get_node_or_null("HealthComponent") as HealthComponent
+		if health != null and health.has_method("take_damage"):
+			if collider.has_method("apply_knockback"):
+				collider.apply_knockback(last_facing_direction, attack_knockback)
+			var final_damage := attack_damage
+			var is_back_hit: bool = collider.has_method("is_hit_from_behind") and collider.is_hit_from_behind(global_position)
+			var final_stagger_amount := stagger_amount
+			if is_back_hit:
+				landed_back_hit = true
+				final_damage += back_attack_damage_bonus
+				final_stagger_amount += 0.75
+			if collider.has_method("apply_stagger"):
+				collider.apply_stagger(final_stagger_amount)
+			var attack_variant := _choose_attack_variant(is_impact_attack, is_counter_attack, has_momentum, is_back_hit)
+			_spawn_hit_spark(collider.global_position, attack_variant)
+			health.take_damage(final_damage)
+			damaged_enemies[collider] = true
+			landed_hit = true
+
+	if landed_hit:
+		if is_impact_attack and world != null and world.has_method("consume_slam_charge"):
+			world.consume_slam_charge()
+		var combat_message := _choose_combat_message(is_impact_attack, is_counter_attack, has_momentum, landed_back_hit)
+		if combat_message != "":
+			combat_message_requested.emit(combat_message)
+		_apply_hit_pause()
+
+func _handle_skill_input() -> void:
+	for index in range(5):
+		if Input.is_action_just_pressed("select_skill_%s" % [index + 1]):
+			selected_skill_slot = index
+			skill_caster.try_cast_slot(index)
+			return
+	if Input.is_action_just_pressed("use_selected_skill"):
+		skill_caster.try_cast_slot(selected_skill_slot)
+
+func _toggle_skill_slot(slot_index: int) -> void:
+	if skill_caster == null:
+		return
+	skill_caster.toggle_slot(slot_index)
+
+func _show_attack_preview() -> void:
+	var half_width := melee_size.x * 0.5
+	var reach := melee_size.y
+	attack_preview_visual.polygon = PackedVector2Array(
+		[
+			Vector2.ZERO,
+			Vector2(reach, -half_width),
+			Vector2(reach + 14.0, 0.0),
+			Vector2(reach, half_width)
+		]
+	)
+	attack_preview.position = last_facing_direction * melee_range
+	attack_preview.rotation = last_facing_direction.angle()
+	attack_preview.visible = true
+	attack_preview_timer = 0.12
+
+func _start_sword_swing(strength: float = 1.0) -> void:
+	if sword == null:
+		return
+	sword_swing_timer = sword_swing_duration
+	sword_swing_strength = maxf(strength, 0.1)
+	_update_sword_feedback(sword_swing_duration * 0.08)
+
+func _update_sword_feedback(_delta: float) -> void:
+	if sword_mount == null or weapon_rig == null:
+		return
+	var attacking := attack_visual_timer > 0.0
+	weapon_rig.sheathed = not attacking
+	weapon_rig.weapon_id = equipped_weapon_id
+	if attacking:
+		var progress := 1.0 - clampf(attack_visual_timer / attack_animation_duration, 0.0, 1.0)
+		var swing: float
+		if progress < 0.42:
+			swing = lerpf(-1.1, -1.5, progress / 0.42)
+		elif progress < 0.65:
+			swing = lerpf(-1.5, 1.2, (progress - 0.42) / 0.23)
+		else:
+			swing = lerpf(1.2, 0.45, (progress - 0.65) / 0.35)
+		if combo_step == 2: swing = -swing
+		# Hand sockets authored against the aligned six-frame body atlas.
+		var sockets := [Vector2(7,5),Vector2(-4,4),Vector2(-8,-5),Vector2(2,7),Vector2(10,0),Vector2(7,5)]
+		if absf(attack_direction.x) > absf(attack_direction.y):
+			sockets = [Vector2(-6,6),Vector2(-8,4),Vector2(4,-2),Vector2(-13,2),Vector2(-9,9),Vector2(-6,6)]
+			if attack_direction.x > 0:
+				for i in range(sockets.size()): sockets[i].x *= -1
+		elif attack_direction.y < 0:
+			sockets = [Vector2(8,-6),Vector2(8,-12),Vector2(9,-8),Vector2(9,-4),Vector2(7,0),Vector2(8,-6)]
+		var hand: Vector2 = sockets[mini(int(progress * 6),5)]
+		sword_mount.rotation = attack_direction.angle() + swing
+		# The grip sits six pixels behind the blade origin.
+		sword_mount.position = body.position + hand + Vector2(6,0).rotated(sword_mount.rotation)
+		sword_mount.z_index = 2 if attack_direction.y >= 0 else -1
+	else:
+		sword_mount.position = body.position + Vector2(3, -4)
+		sword_mount.rotation = 1.1
+		sword_mount.z_index = -1
+	sword_mount.modulate = Color.WHITE
+
+func _setup_xianxia_visuals() -> void:
+	body.texture = _player_down_idle_texture
+	body.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	body.centered = true
+	body.material = null
+	_sync_body_scale()
+	if selection_ring != null:
+		selection_ring.visible = false
+	if facing_marker != null:
+		facing_marker.visible = false
+
+	sword_mount = sword
+	sword_visual = get_node_or_null("Sword/SwordSprite") as Sprite2D if sword_mount != null else null
+	if sword_visual == null and sword_mount == null:
+		sword_visual = Sprite2D.new()
+		sword_visual.name = "Sword"
+		add_child(sword_visual)
+		move_child(sword_visual, body.get_index() + 1)
+		sword_mount = sword_visual
+		sword = sword_mount
+	elif sword_visual == null and sword_mount != null:
+		sword_visual = Sprite2D.new()
+		sword_visual.name = "SwordSprite"
+		sword_mount.add_child(sword_visual)
+	if sword_visual != null:
+		sword_visual.texture = PLAYER_SWORD_TEXTURE
+		sword_visual.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+		sword_visual.centered = true
+		sword_visual.rotation = PI
+		sword_visual.z_index = 0
+	if sword_mount != null:
+		sword_mount.position = Vector2(13.0, 1.0)
+		sword_mount.rotation = -0.68
+		sword_mount.z_index = 0
+
+	var blade := sword_mount.get_node_or_null("Blade") as Polygon2D if sword_mount != null else null
+	if blade != null:
+		blade.visible = false
+	var guard_poly := sword_mount.get_node_or_null("Guard") as Polygon2D if sword_mount != null else null
+	if guard_poly != null:
+		guard_poly.visible = false
+	var hilt_poly := sword_mount.get_node_or_null("Hilt") as Polygon2D if sword_mount != null else null
+	if hilt_poly != null:
+		hilt_poly.visible = false
+
+	robe_sash_visual = get_node_or_null("RobeSash") as Polygon2D
+	if robe_sash_visual == null:
+		robe_sash_visual = Polygon2D.new()
+		robe_sash_visual.name = "RobeSash"
+		add_child(robe_sash_visual)
+		move_child(robe_sash_visual, body.get_index() + 1)
+	robe_sash_visual.visible = false
+	if weapon_rig == null:
+		weapon_rig = Node2D.new()
+		weapon_rig.set_script(preload("res://scripts/player/WeaponRig.gd"))
+		sword_mount.add_child(weapon_rig)
+	if sword_visual != null: sword_visual.visible = false
+	_refresh_equipped_weapon_visual()
+
+func set_equipped_weapon(item_id: String) -> void:
+	equipped_weapon_id = item_id
+	match item_id:
+		"heavy_saber":
+			melee_cooldown = 0.55
+			attack_stamina_cost = 2.8
+			weapon_bonus_damage = 2
+			melee_knockback_force = 550.0
+			melee_range = 30.0
+			melee_size = Vector2(54, 46)
+		"jade_sword":
+			melee_cooldown = 0.26
+			attack_stamina_cost = 1.4
+			weapon_bonus_damage = 0
+			melee_knockback_force = 250.0
+			melee_range = 28.0
+			melee_size = Vector2(46, 26)
+		_:
+			melee_cooldown = 0.35
+			attack_stamina_cost = 2.0
+			weapon_bonus_damage = 0
+			melee_knockback_force = 420.0
+			melee_range = 26.0
+			melee_size = Vector2(44, 34)
+	_refresh_equipped_weapon_visual()
+
+func _refresh_equipped_weapon_visual() -> void:
+	if sword_mount == null:
+		return
+	sword_mount.visible = equipped_weapon_id != ""
+
+func _get_directional_animation_state() -> Dictionary:
+	var direction := last_facing_direction
+	if direction == Vector2.ZERO:
+		return {
+			"idle_frames": _get_idle_frames_for_direction(Vector2.DOWN),
+			"run_frames": [PLAYER_DOWN_RUN_TEXTURE],
+			"flip_h": false,
+		}
+
+	var run_key := ""
+	var flip_h := false
+	if direction.x < -0.001:
+		if direction.y < -0.001:
+			run_key = "up_left"
+		elif direction.y > 0.001:
+			run_key = "down_left"
+		else:
+			run_key = "left"
+	elif direction.x > 0.001:
+		flip_h = true
+		if direction.y < -0.001:
+			run_key = "up_left"
+		elif direction.y > 0.001:
+			run_key = "down_left"
+		else:
+			run_key = "left"
+	elif direction.y > 0.001:
+		run_key = "down"
+	else:
+		run_key = "up"
+
+	var run_frames := _get_five_dir_run_frames(run_key)
+	if not run_frames.is_empty():
+		return {
+			"idle_frames": _get_idle_frames_for_direction(direction),
+			"run_frames": run_frames,
+			"flip_h": flip_h,
+		}
+
+	if absf(direction.x) > absf(direction.y):
+		if direction.x > 0.0:
+			return {
+				"idle_frames": _get_idle_frames_for_direction(direction),
+				"run_frames": [PLAYER_RIGHT_RUN_TEXTURE],
+				"flip_h": true,
+			}
+		return {
+			"idle_frames": _get_idle_frames_for_direction(direction),
+			"run_frames": [PLAYER_LEFT_RUN_TEXTURE],
+			"flip_h": false,
+		}
+	if direction.y > 0.0:
+		return {
+			"idle_frames": _get_idle_frames_for_direction(direction),
+			"run_frames": [PLAYER_DOWN_RUN_TEXTURE],
+			"flip_h": false,
+		}
+	return {
+		"idle_frames": _get_idle_frames_for_direction(direction),
+		"run_frames": [PLAYER_UP_RUN_TEXTURE],
+		"flip_h": false,
+	}
+
+func _get_five_dir_run_frames(key: String) -> Array[Texture2D]:
+	if _five_dir_run_frames.is_empty():
+		_build_five_dir_run_frames()
+	return _five_dir_run_frames.get(key, [])
+
+func _build_five_dir_run_frames() -> void:
+	_five_dir_run_frames.clear()
+	if _five_dir_run_sheet == null:
+		return
+
+	var frame_width := int(_five_dir_run_sheet.get_width() / PLAYER_RUN_SHEET_COLUMNS)
+	var frame_height := int(_five_dir_run_sheet.get_height() / PLAYER_RUN_SHEET_ROWS)
+	if frame_width <= 0 or frame_height <= 0:
+		return
+
+	_five_dir_run_frames["down_left"] = _slice_run_sheet_row(PLAYER_RUN_ROW_DOWN_LEFT, frame_width, frame_height)
+	_five_dir_run_frames["left"] = _slice_run_sheet_row(PLAYER_RUN_ROW_LEFT, frame_width, frame_height)
+	_five_dir_run_frames["up_left"] = _slice_run_sheet_row(PLAYER_RUN_ROW_UP_LEFT, frame_width, frame_height)
+	_five_dir_run_frames["up"] = _slice_run_sheet_row(PLAYER_RUN_ROW_UP, frame_width, frame_height)
+	_five_dir_run_frames["down"] = _slice_run_sheet_row(PLAYER_RUN_ROW_DOWN, frame_width, frame_height)
+
+func _slice_run_sheet_row(row: int, frame_width: int, frame_height: int) -> Array[Texture2D]:
+	var frames: Array[Texture2D] = []
+	for column in range(PLAYER_RUN_SHEET_COLUMNS):
+		var atlas := AtlasTexture.new()
+		atlas.atlas = _five_dir_run_sheet
+		atlas.region = Rect2(column * frame_width, row * frame_height, frame_width, frame_height)
+		frames.append(atlas)
+	return frames
+
+func _get_idle_frames_for_direction(direction: Vector2) -> Array[Texture2D]:
+	if _idle_frames.is_empty():
+		_build_idle_frames()
+	var key: String
+	if absf(direction.x) > absf(direction.y):
+		key = "left"
+	elif direction.y > 0.0:
+		key = "down"
+	else:
+		key = "up"
+	return _idle_frames.get(key, [])
+
+func _build_idle_frames() -> void:
+	_idle_frames.clear()
+	if _idle_sheet == null:
+		return
+	var frame_width := int(_idle_sheet.get_width() / PLAYER_IDLE_SHEET_COLUMNS)
+	var frame_height := int(_idle_sheet.get_height() / PLAYER_IDLE_SHEET_ROWS)
+	if frame_width <= 0 or frame_height <= 0:
+		return
+	_idle_frames["down"] = _slice_idle_sheet_row(PLAYER_IDLE_ROW_DOWN, frame_width, frame_height)
+	_idle_frames["up"] = _slice_idle_sheet_row(PLAYER_IDLE_ROW_UP, frame_width, frame_height)
+	_idle_frames["left"] = _slice_idle_sheet_row(PLAYER_IDLE_ROW_LEFT, frame_width, frame_height)
+
+func _slice_idle_sheet_row(row: int, frame_width: int, frame_height: int) -> Array[Texture2D]:
+	var frames: Array[Texture2D] = []
+	for col in range(PLAYER_IDLE_SHEET_COLUMNS):
+		var atlas := AtlasTexture.new()
+		atlas.atlas = _idle_sheet
+		atlas.region = Rect2(col * frame_width, row * frame_height, frame_width, frame_height)
+		frames.append(atlas)
+	return frames
+
+func _get_attack_frames_for_direction(direction: Vector2) -> Array[Texture2D]:
+	if _weapon_attack_frames.is_empty():
+		var sheet := load("res://assets/art_v2/player_attack_aligned.png") as Texture2D
+		for row in range(3):
+			var frames: Array[Texture2D] = []
+			for col in range(6):
+				var atlas := AtlasTexture.new()
+				atlas.atlas = sheet
+				atlas.region = Rect2(col * 160, row * 224, 160, 224)
+				frames.append(atlas)
+			_weapon_attack_frames[["down", "left", "up"][row]] = frames
+	var key: String
+	if absf(direction.x) > absf(direction.y):
+		key = "left"
+	elif direction.y > 0.0:
+		key = "down"
+	else:
+		key = "up"
+	return _weapon_attack_frames.get(key, [])
+
+func _build_attack_frames() -> void:
+	_attack_frames.clear()
+	if _attack_sheet == null:
+		return
+	var frame_width := int(_attack_sheet.get_width() / PLAYER_ATTACK_SHEET_COLUMNS)
+	var frame_height := int(_attack_sheet.get_height() / PLAYER_ATTACK_SHEET_ROWS)
+	if frame_width <= 0 or frame_height <= 0:
+		return
+	_attack_frames["down"] = _slice_attack_sheet_row(PLAYER_ATTACK_ROW_DOWN, frame_width, frame_height)
+	_attack_frames["up"] = _slice_attack_sheet_row(PLAYER_ATTACK_ROW_UP, frame_width, frame_height)
+	_attack_frames["left"] = _slice_attack_sheet_row(PLAYER_ATTACK_ROW_LEFT, frame_width, frame_height)
+	_attack_frames["death"] = _slice_attack_sheet_row(PLAYER_ATTACK_ROW_DEATH, frame_width, frame_height)
+
+func _slice_attack_sheet_row(row: int, frame_width: int, frame_height: int) -> Array[Texture2D]:
+	var frames: Array[Texture2D] = []
+	for col in range(PLAYER_ATTACK_SHEET_COLUMNS):
+		var atlas := AtlasTexture.new()
+		atlas.atlas = _attack_sheet
+		atlas.region = Rect2(col * frame_width, row * frame_height, frame_width, frame_height)
+		frames.append(atlas)
+	return frames
+
+func _load_png_texture(path: String) -> Texture2D:
+	var resource := load(path) as Texture2D
+	if resource != null:
+		return resource
+
+	var image := Image.load_from_file(ProjectSettings.globalize_path(path))
+	if image == null:
+		push_error("Failed to load idle texture image: %s" % path)
+		return null
+	return ImageTexture.create_from_image(image)
+
+func _build_player_texture() -> Texture2D:
+	var image := Image.create(32, 36, false, Image.FORMAT_RGBA8)
+	image.fill(Color(0, 0, 0, 0))
+	var shadow := Color(0.52, 0.68, 0.76, 1.0)
+	var robe := Color(0.91, 0.94, 0.91, 1.0)
+	var robe_light := Color(0.99, 0.98, 0.91, 1.0)
+	var trim := Color(0.54, 0.87, 0.94, 1.0)
+	var hair := Color(0.08, 0.08, 0.12, 1.0)
+	var skin := Color(0.92, 0.74, 0.58, 1.0)
+	_fill_rect(image, Rect2i(12, 2, 8, 5), hair)
+	_fill_rect(image, Rect2i(11, 6, 10, 5), skin)
+	_fill_rect(image, Rect2i(10, 5, 3, 14), hair)
+	_fill_rect(image, Rect2i(20, 6, 2, 12), hair)
+	_fill_rect(image, Rect2i(9, 11, 14, 18), shadow)
+	_fill_rect(image, Rect2i(10, 10, 12, 20), robe)
+	_fill_rect(image, Rect2i(13, 11, 6, 18), robe_light)
+	_fill_rect(image, Rect2i(9, 15, 3, 10), trim)
+	_fill_rect(image, Rect2i(20, 15, 3, 10), trim)
+	_fill_rect(image, Rect2i(12, 28, 8, 4), Color(0.72, 0.78, 0.82, 1.0))
+	_fill_rect(image, Rect2i(14, 7, 2, 1), Color(0.12, 0.1, 0.12, 1.0))
+	_fill_rect(image, Rect2i(18, 7, 2, 1), Color(0.12, 0.1, 0.12, 1.0))
+	return ImageTexture.create_from_image(image)
+
+func _build_sword_texture() -> Texture2D:
+	var image := Image.create(28, 28, false, Image.FORMAT_RGBA8)
+	image.fill(Color(0, 0, 0, 0))
+	var blade := Color(0.88, 0.96, 1.0, 1.0)
+	var edge := Color(0.45, 0.74, 0.88, 1.0)
+	var hilt := Color(0.82, 0.65, 0.28, 1.0)
+	for i in range(4, 23):
+		image.set_pixel(i, 24 - i, blade)
+		image.set_pixel(i, 25 - i, edge)
+		if i < 20:
+			image.set_pixel(i + 1, 24 - i, blade)
+	_fill_rect(image, Rect2i(17, 8, 8, 2), hilt)
+	_fill_rect(image, Rect2i(21, 8, 2, 7), Color(0.33, 0.2, 0.12, 1.0))
+	return ImageTexture.create_from_image(image)
+
+func _update_xianxia_animation(_delta: float) -> void:
+	if sword_mount == null:
+		return
+
+	var moving := current_input_direction != Vector2.ZERO
+	var is_dashing := dash_timer > 0.0
+	var state := _get_directional_animation_state()
+	var run_frames: Array = state.get("run_frames", [])
+	var idle_frames: Array = state.get("idle_frames", [])
+	body.flip_h = bool(state.get("flip_h", false))
+
+	if attack_visual_timer > 0.0:
+		var attack_frames := _get_attack_frames_for_direction(last_facing_direction)
+		if not attack_frames.is_empty():
+			var progress := 1.0 - (attack_visual_timer / attack_animation_duration)
+			var frame_idx := mini(int(progress * 6), 5)
+			body.texture = attack_frames[frame_idx]
+			if absf(last_facing_direction.x) > absf(last_facing_direction.y):
+				body.flip_h = last_facing_direction.x > 0
+	elif moving or is_dashing:
+		_run_anim_timer -= _delta
+		if _run_anim_timer <= 0.0:
+			_run_anim_frame = (_run_anim_frame + 1) % maxi(run_frames.size(), 1)
+			_run_anim_timer = 1.0 / RUN_ANIM_FPS
+		if run_frames.is_empty():
+			body.texture = idle_frames[0] if not idle_frames.is_empty() else _player_down_idle_texture
+		else:
+			body.texture = run_frames[_run_anim_frame % run_frames.size()]
+	else:
+		_run_anim_timer = 0.0
+		_run_anim_frame = 0
+		if idle_frames.is_empty():
+			body.texture = _player_down_idle_texture
+		else:
+			_idle_anim_timer -= _delta
+			if _idle_anim_timer <= 0.0:
+				_idle_anim_frame = (_idle_anim_frame + 1) % idle_frames.size()
+				_idle_anim_timer = 1.0 / IDLE_ANIM_FPS
+			body.texture = idle_frames[_idle_anim_frame % idle_frames.size()]
+	_sync_body_scale()
+	var walk_bob := sin(visual_time * 7.0) * 0.7 if moving else sin(visual_time * 3.0) * 0.45
+	if attack_visual_timer > 0.0 and hurt_pulse_timer <= 0.0:
+		var progress := 1.0 - (attack_visual_timer / attack_animation_duration)
+		var arc := sin(progress * PI)
+		body.position = last_facing_direction * arc * 5.0 + Vector2(0.0, walk_bob)
+		var squish := Vector2(1.0 - arc * 0.10, 1.0 + arc * 0.07)
+		body.scale = normal_body_scale * squish
+	else:
+		body.position = Vector2(0.0, walk_bob)
+	if robe_sash_visual != null:
+		robe_sash_visual.position = Vector2(sin(visual_time * 8.0) * (1.2 if moving else 0.35), walk_bob)
+
+	body.rotation = 0.0
+	_update_sword_feedback(0.0)
+
+
+func _spawn_afterimage(alpha: float) -> void:
+	var ghost := Sprite2D.new()
+	ghost.texture = body.texture
+	ghost.scale = body.scale
+	ghost.rotation = body.rotation
+	ghost.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	ghost.modulate = Color(0.55, 0.88, 1.0, alpha)
+	ghost.z_index = body.z_index - 1
+	ghost.position = get_parent().to_local(body.global_position) if get_parent() is Node2D else body.global_position
+	ghost.global_rotation = body.global_rotation
+	get_parent().call_deferred("add_child", ghost)
+	var fade_time := 0.12 if dash_timer <= 0.0 else 0.08
+	get_tree().create_tween().tween_property(ghost, "modulate:a", 0.0, fade_time).set_delay(0.02)
+	var cleanup_tween := get_tree().create_tween()
+	cleanup_tween.tween_interval(fade_time + 0.03)
+	cleanup_tween.tween_callback(ghost.queue_free)
+
+func _sync_body_scale() -> void:
+	var tex := body.texture
+	if tex == null:
+		_body_base_scale = Vector2.ONE
+		normal_body_scale = _body_base_scale
+		body.scale = normal_body_scale
+		return
+
+	var tex_size := tex.get_size()
+	if tex_size.x <= 0.0 or tex_size.y <= 0.0:
+		_body_base_scale = Vector2.ONE
+	else:
+		var uniform_scale := minf(PLAYER_DISPLAY_SIZE.x / tex_size.x, PLAYER_DISPLAY_SIZE.y / tex_size.y)
+		_body_base_scale = Vector2.ONE * uniform_scale
+	normal_body_scale = _body_base_scale
+	var pulse := clampf(hurt_pulse_timer / maxf(hurt_flash_duration, 0.001), 0.0, 1.0)
+	body.scale = normal_body_scale * lerpf(1.0, hurt_pulse_scale, pulse)
+
+func _fill_rect(image: Image, rect: Rect2i, fill: Color) -> void:
+	for y in range(rect.position.y, rect.end.y):
+		for x in range(rect.position.x, rect.end.x):
+			if x >= 0 and y >= 0 and x < image.get_width() and y < image.get_height():
+				image.set_pixel(x, y, fill)
+
+func _choose_attack_variant(is_impact_attack: bool, is_counter_attack: bool, has_momentum: bool, is_back_hit: bool) -> String:
+	if is_impact_attack:
+		return ATTACK_VARIANT_IMPACT
+	if is_counter_attack:
+		return ATTACK_VARIANT_COUNTER
+	if is_back_hit:
+		return ATTACK_VARIANT_BACK_HIT
+	if has_momentum:
+		return ATTACK_VARIANT_MOMENTUM
+	return ATTACK_VARIANT_NORMAL
+
+func _choose_combat_message(is_impact_attack: bool, is_counter_attack: bool, has_momentum: bool, is_back_hit: bool) -> String:
+	var variant := _choose_attack_variant(is_impact_attack, is_counter_attack, has_momentum, is_back_hit)
+	match variant:
+		ATTACK_VARIANT_COUNTER:
+			return "Counter"
+		ATTACK_VARIANT_IMPACT:
+			return "Impact Strike"
+		ATTACK_VARIANT_BACK_HIT:
+			return "Back Hit"
+		ATTACK_VARIANT_MOMENTUM:
+			return "Momentum"
+		_:
+			return ""
+
+func _get_variant_spark_color(variant: String) -> Color:
+	match variant:
+		ATTACK_VARIANT_COUNTER:
+			return Color(0.18, 1.0, 0.9, 1.0)
+		ATTACK_VARIANT_IMPACT:
+			return Color(1.0, 0.9, 0.28, 1.0)
+		ATTACK_VARIANT_BACK_HIT:
+			return Color(1.0, 0.32, 0.22, 1.0)
+		ATTACK_VARIANT_MOMENTUM:
+			return Color(0.45, 0.82, 1.0, 1.0)
+		_:
+			return Color.WHITE
+
+func _get_variant_spark_end_scale(variant: String) -> Vector2:
+	match variant:
+		ATTACK_VARIANT_COUNTER:
+			return Vector2(2.1, 2.1)
+		ATTACK_VARIANT_IMPACT:
+			return Vector2(2.35, 2.35)
+		ATTACK_VARIANT_BACK_HIT:
+			return Vector2(1.95, 1.95)
+		ATTACK_VARIANT_MOMENTUM:
+			return Vector2(1.85, 1.85)
+		_:
+			return Vector2(1.6, 1.6)
+
+func _spawn_hit_spark(effect_position: Vector2, variant: String = ATTACK_VARIANT_NORMAL) -> void:
+	var spark := HIT_SPARK_SCENE.instantiate() as Node2D
+	var effect_host := _get_effect_host()
+	if effect_host == null:
+		return
+	effect_host.add_child(spark)
+	spark.global_position = effect_position
+	if spark.has_method("configure"):
+		spark.configure(
+			_get_variant_spark_color(variant),
+			Vector2(0.75, 0.75),
+			_get_variant_spark_end_scale(variant),
+			0.18 if variant == ATTACK_VARIANT_NORMAL else 0.22
+		)
+
+func _spawn_slash_trail(variant: String) -> void:
+	var trail := SLASH_TRAIL_SCENE.instantiate() as Node2D
+	var effect_host := _get_effect_host()
+	if effect_host == null:
+		return
+	effect_host.add_child(trail)
+	trail.global_position = global_position
+	if trail.has_method("setup"):
+		trail.setup(last_facing_direction, variant, melee_range)
+
+func _get_effect_host() -> Node:
+	var tree := get_tree()
+	if tree == null:
+		return get_parent()
+	if tree.current_scene != null:
+		return tree.current_scene
+	return get_parent()
+
+func _apply_hit_pause() -> void:
+	# Brief local recovery avoids racing the pause menu or inventory.
+	melee_timer += hit_pause_duration
+	var polish := get_tree().get_first_node_in_group("game_feel")
+	if polish != null:
+		polish.impact(2.5)
+
+func _on_damaged(_amount: int) -> void:
+	body.modulate = Color(1.0, 0.18, 0.12, 1.0)
+	body.scale = normal_body_scale * hurt_pulse_scale
+	hurt_flash_timer = hurt_flash_duration
+	hurt_pulse_timer = hurt_flash_duration
+	damage_ring.visible = true
+	damage_ring.scale = Vector2.ONE
+	damage_ring.modulate.a = 1.0
+	damage_ring_timer = 0.2
+
+func _update_death_animation(delta: float) -> void:
+	var death_frames: Array = _attack_frames.get("death", [])
+	if death_frames.is_empty():
+		if _attack_frames.is_empty():
+			_build_attack_frames()
+		death_frames = _attack_frames.get("death", [])
+	if death_frames.is_empty():
+		return
+	if _death_anim_frame < death_frames.size() - 1:
+		_death_anim_timer += delta
+		if _death_anim_timer >= 1.0 / DEATH_ANIM_FPS:
+			_death_anim_timer = 0.0
+			_death_anim_frame += 1
+	body.texture = death_frames[_death_anim_frame]
+	body.flip_h = false
+	body.position = Vector2.ZERO
+	body.scale = normal_body_scale
+	_sync_body_scale()
+
+func _on_died() -> void:
+	is_defeated = true
+	is_defending = false
+	is_exhausted = false
+	body.modulate = Color.WHITE
+	body.scale = normal_body_scale
+	guard_ring.visible = false
+	damage_ring.visible = false
+	attack_preview.visible = false
+	_death_anim_frame = 0
+	_death_anim_timer = 0.0
+	if sword_mount != null:
+		sword_mount.visible = false
+
+func apply_incoming_damage(amount: int) -> void:
+	if amount <= 0 or is_defeated or dash_timer > 0.0 or invulnerability_timer > 0.0:
+		return
+
+	var final_damage := amount
+	if is_defending and current_stamina > 0.0:
+		final_damage = maxi(amount - defend_block_amount, 0)
+		if final_damage < amount:
+			blocked.emit()
+			block_ring_timer = 0.18
+
+	if final_damage > 0:
+		invulnerability_timer = 0.5
+		health_component.take_damage(final_damage)
+
+func apply_attack_hitback(direction: Vector2, force: float) -> void:
+	if dash_timer > 0.0:
+		return
+	if direction == Vector2.ZERO or force <= 0.0:
+		return
+	attack_hitback_velocity = direction.normalized() * force
+
+func is_attack_target_active() -> bool:
+	return not is_defeated
+
+func _is_counter_ready_visual_active() -> bool:
+	return counter_ready_timer > 0.0 and not is_defeated
+
+func _update_defense(delta: float) -> void:
+	var wants_defense := Input.is_action_pressed("defend")
+	var next_is_defending := wants_defense and current_stamina > 0.0 and not is_exhausted and dash_timer <= 0.0
+
+	if next_is_defending:
+		_set_stamina(current_stamina - defend_stamina_per_second * delta)
+		if current_stamina <= 0.0:
+			next_is_defending = false
+	else:
+		_set_stamina(current_stamina + stamina_regen_per_second * delta)
+
+	if is_defending != next_is_defending:
+		is_defending = next_is_defending
+		if is_defending:
+			perfect_guard_timer = perfect_guard_window
+		_refresh_body_feedback()
+
+func _set_stamina(value: float) -> void:
+	var previous_stamina := current_stamina
+	var was_exhausted := is_exhausted
+	current_stamina = clampf(value, 0.0, max_stamina)
+	if current_stamina <= 0.0:
+		is_exhausted = true
+	if is_exhausted and is_equal_approx(current_stamina, max_stamina):
+		is_exhausted = false
+		_refresh_body_feedback()
+	if was_exhausted != is_exhausted:
+		exhaustion_changed.emit(is_exhausted)
+	if not is_equal_approx(previous_stamina, current_stamina):
+		stamina_changed.emit(current_stamina, max_stamina)
+
+func can_spend_stamina(amount: float) -> bool:
+	return not is_exhausted and not is_defeated and current_stamina >= amount
+
+func spend_stamina(amount: float) -> void:
+	_set_stamina(current_stamina - amount)
+
+func get_skill_origin() -> Vector2:
+	return global_position
+
+func get_skill_direction() -> Vector2:
+	return last_facing_direction
+
+func get_skill_slot_names() -> Array[String]:
+	if skill_caster == null:
+		return ["Empty", "Empty", "Empty", "Empty", "Empty"]
+	return skill_caster.get_slot_names()
+
+func _ensure_default_transform_skill() -> void:
+	while skill_caster.skills.size() < SkillCaster.SLOT_COUNT:
+		skill_caster.skills.append(null)
+	if skill_caster.skills[0] == null:
+		skill_caster.skills[0] = TRANSFORM_SKILL
+	if skill_caster.skills[1] == null:
+		skill_caster.skills[1] = DIVINE_LIGHT_SKILL
+	for index in range(3):
+		if skill_caster.skills[index + 2] == null:
+			skill_caster.skills[index + 2] = load("res://resources/skills/%s.tres" % [ ["MoonCleave", "JadeTempest", "Renewal"][index] ])
+
+func _on_skill_slots_changed(slot_names: Array[String]) -> void:
+	skill_slots_changed.emit(slot_names)
+
+func _on_skill_cast_failed(message: String) -> void:
+	combat_message_requested.emit(message)
+
+func _on_skill_cast_started(_message: String) -> void:
+	pass
+
+func _on_active_slots_changed(active_states: Array[bool]) -> void:
+	active_skill_slots = active_states.duplicate()
+	active_skill_slots_changed.emit(active_skill_slots)
+
+func _refresh_body_feedback() -> void:
+	if is_defeated:
+		body.modulate = Color(0.45, 0.45, 0.45, 1.0)
+	elif _is_counter_ready_visual_active():
+		body.modulate = Color(0.5, 1.0, 0.92, 1.0)
+	elif is_exhausted:
+		body.modulate = Color(0.78, 0.78, 0.78, 1.0)
+	elif is_defending:
+		body.modulate = Color(0.55, 0.78, 1.0, 1.0)
+	else:
+		body.modulate = Color.WHITE
+
+	guard_ring.visible = _is_counter_ready_visual_active() or is_defending
+
+func _try_dash(input_direction: Vector2) -> void:
+	if dash_cooldown_timer > 0.0 or is_exhausted or is_defeated or current_stamina < dash_stamina_cost:
+		return
+
+	dash_direction = input_direction
+	if dash_direction == Vector2.ZERO:
+		dash_direction = last_facing_direction
+	if dash_direction == Vector2.ZERO:
+		return
+
+	is_defending = false
+	_refresh_body_feedback()
+	_set_stamina(current_stamina - dash_stamina_cost)
+	attack_pending_timer = 0.0
+	attack_visual_timer = 0.0
+	dash_timer = dash_duration
+	dash_cooldown_timer = dash_cooldown
+	combat_message_requested.emit("Dash")
+
+func handle_enemy_attack(amount: int, enemy: Node2D) -> void:
+	if amount <= 0:
+		return
+
+	if is_defending and perfect_guard_timer > 0.0:
+		_set_stamina(current_stamina + perfect_guard_stamina_restore)
+		counter_ready_timer = counter_window
+		blocked.emit()
+		combat_message_requested.emit("Perfect Guard - Counter Ready")
+		block_ring_timer = 0.25
+		_refresh_body_feedback()
+		if enemy != null:
+			if enemy.has_method("apply_knockback"):
+				enemy.apply_knockback((enemy.global_position - global_position).normalized(), melee_knockback_force + counter_knockback_bonus)
+			if enemy.has_method("apply_stagger"):
+				enemy.apply_stagger(counter_stagger_amount)
+		return
+
+	apply_incoming_damage(amount)

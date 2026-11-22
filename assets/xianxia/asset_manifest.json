@@ -1,0 +1,102 @@
+[
+  {
+    "file": "player_idle.png",
+    "target_size": "32x36",
+    "mode": "RGBA",
+    "alpha_values": [
+      0,
+      255
+    ],
+    "source": "a_clean_pixel_art_8_bit_style_sprite_on_a_transp_1.png"
+  },
+  {
+    "file": "player_run_left.png",
+    "target_size": "32x36",
+    "mode": "RGBA",
+    "alpha_values": [
+      0,
+      255
+    ],
+    "source": "a_clean_transparent_background_pixel_art_sprite_s_2_batch_1.png"
+  },
+  {
+    "file": "player_run_right.png",
+    "target_size": "32x36",
+    "mode": "RGBA",
+    "alpha_values": [
+      0,
+      255
+    ],
+    "source": "a_clean_minimal_pixel_art_sprite_scene_on_a_trans_3_batch_2.png"
+  },
+  {
+    "file": "player_run_up.png",
+    "target_size": "32x36",
+    "mode": "RGBA",
+    "alpha_values": [
+      0,
+      255
+    ],
+    "source": "a_minimalist_pixel_art_style_sprite_on_a_transp_11.png"
+  },
+  {
+    "file": "player_run_down.png",
+    "target_size": "32x36",
+    "mode": "RGBA",
+    "alpha_values": [
+      0,
+      255
+    ],
+    "source": "a_clean_transparent_png_style_image_with_a_pixel_5_batch_4.png"
+  },
+  {
+    "file": "sword.png",
+    "target_size": "28x28",
+    "mode": "RGBA",
+    "alpha_values": [
+      0,
+      255
+    ],
+    "source": "a_clean_centered_pixel_art_scene_on_a_transparent_6_batch_5.png"
+  },
+  {
+    "file": "skeleton_idle.png",
+    "target_size": "30x32",
+    "mode": "RGBA",
+    "alpha_values": [
+      0,
+      255
+    ],
+    "source": "a_clean_pixel_art_sprite_on_a_transparent_backgrou_7_batch_6.png"
+  },
+  {
+    "file": "skeleton_corpse.png",
+    "target_size": "32x24",
+    "mode": "RGBA",
+    "alpha_values": [
+      0,
+      255
+    ],
+    "source": "a_clean_minimal_pixel_art_sprite_on_a_solid_trans_8_batch_7.png"
+  },
+  {
+    "file": "tree.png",
+    "target_size": "42x42",
+    "mode": "RGBA",
+    "alpha_values": [
+      0,
+      255
+    ],
+    "source": "a_clean_isolated_pixel_art_illustration_on_a_trans_9_batch_8.png"
+  },
+  {
+    "file": "rock.png",
+    "target_size": "96x96",
+    "mode": "RGBA",
+    "alpha_values": [
+      0,
+      255
+    ],
+    "source": "a_centered_pixel_art_illustration_on_a_transparent_10_batch_9.png"
+  }
+]
